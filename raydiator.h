@@ -7,7 +7,10 @@
 #include <stdexcept>
 #include <cstdint>
 #include <raylib.h>
+#include <filesystem>
 #include <unordered_map>
+
+#define TEX_WIDTH 64
 
 
 namespace raydiator {
@@ -89,6 +92,8 @@ namespace raydiator {
         float plane_width;
         int floor_style;
         int roof_style;
+
+        Image atlas;
 
         /**
          * Returns map value at coord p
@@ -176,6 +181,16 @@ namespace raydiator {
             plane_width = readMetadata<float>("plane_width");
             floor_style = readMetadata<float>("floor_style");
             roof_style = readMetadata<float>("roof_style");
+
+            // Read the atlas filename
+            std::string atlas_filename = readMetadata<std::string>("atlas_filename");
+
+            // Update atlas_filename to include the parent directory path from filename of map
+            std::filesystem::path map_path(filename);  // Get the path object for the map file
+            std::filesystem::path atlas_path = map_path.parent_path() / atlas_filename;  // Combine parent path with the atlas filename
+
+            // Now atlas_filename includes the full path relative to the map's directory
+            atlas = LoadImage(atlas_path.c_str());
         }
     };
 
@@ -265,8 +280,8 @@ namespace raydiator {
 
     inline double normalize(float value, float min = 0, float max = 10) {
         ASSERT(min != max, "Main and max are the same");
-        if (value < min) {value = min;}
-        if (value > max) {value = max;}
+        if (value < min) { value = min; }
+        if (value > max) { value = max; }
         return 1 - (value - min) / (max - min);
     }
 
@@ -278,8 +293,17 @@ namespace raydiator {
         Player &player;
         Window &window;
         Color bg_color = Color{0, 0, 0, 1};
+        Image screen_buffer_image;
+        Texture2D screen_buffer_texture;
 
         LevelRenderer(Level &level, Player &player, Window &window): level(level), player(player), window(window) {
+            screen_buffer_image = GenImageColor(window.width, window.height, BLANK);
+            screen_buffer_texture = LoadTextureFromImage(screen_buffer_image);
+        }
+
+        ~LevelRenderer() {
+            UnloadImage(screen_buffer_image);
+            UnloadTexture(screen_buffer_texture);
         }
 
         void update() {
@@ -378,36 +402,38 @@ namespace raydiator {
                 };
 
                 //which box of the map we're in
-                Vector2 map{player.position.x, player.position.y};
+                Vector2 map{floor(player.position.x), floor(player.position.y)}; // Added floor() for safety
 
                 //length of ray from current position to next x or y-side
                 Vector2 side_dist;
 
                 //length of ray from one x or y-side to next x or y-side
-                Vector2 delta_dist{std::abs(1 / ray_dir.x), std::abs(1 / ray_dir.y)};
-
+                Vector2 delta_dist{
+                    (ray_dir.x == 0) ? 1e30f : std::abs(1 / ray_dir.x),
+                    (ray_dir.y == 0) ? 1e30f : std::abs(1 / ray_dir.y)
+                };
 
                 //what direction to step in x or y-direction (either +1 or -1)
-                Vector2 step;
+                Vector2 dda_step;
 
                 int hit = 0; //was there a wall hit?
                 int side; //was a NS or a EW wall hit?
 
                 //calculate step and initial sideDist
                 if (ray_dir.x < 0) {
-                    step.x = -1;
-                    side_dist.x = (player.position.x - floor(player.position.x)) * delta_dist.x;
+                    dda_step.x = -1;
+                    side_dist.x = (player.position.x - map.x) * delta_dist.x;
                 } else {
-                    step.x = 1;
-                    side_dist.x = (ceil(player.position.x) - player.position.x) * delta_dist.x;
+                    dda_step.x = 1;
+                    side_dist.x = (map.x + 1.0 - player.position.x) * delta_dist.x;
                 }
 
                 if (ray_dir.y < 0) {
-                    step.y = -1;
-                    side_dist.y = (player.position.y - floor(player.position.y)) * delta_dist.y;
+                    dda_step.y = -1;
+                    side_dist.y = (player.position.y - map.y) * delta_dist.y;
                 } else {
-                    step.y = 1;
-                    side_dist.y = (ceil(player.position.y) - player.position.y) * delta_dist.y;
+                    dda_step.y = 1;
+                    side_dist.y = (map.y + 1.0 - player.position.y) * delta_dist.y;
                 }
 
                 //perform DDA
@@ -415,44 +441,100 @@ namespace raydiator {
                     //jump to next map square, either in x-direction, or in y-direction
                     if (side_dist.x < side_dist.y) {
                         side_dist.x += delta_dist.x;
-                        map.x += step.x;
+                        map.x += dda_step.x;
                         side = 0;
                     } else {
                         side_dist.y += delta_dist.y;
-                        map.y += step.y;
+                        map.y += dda_step.y;
                         side = 1;
                     }
                     //Check if ray has hit a wall
                     if (level.at(map) > 0) hit = 1;
                 }
 
-                //Calculate distance projected on camera direction (Euclidean distance would give fisheye effect!)
+                //Calculate distance projected on camera direction
                 double perp_wall_dist;
                 if (side == 0) perp_wall_dist = (side_dist.x - delta_dist.x);
                 else perp_wall_dist = (side_dist.y - delta_dist.y);
+
+                // Prevent division by zero or negative distances
+                if (perp_wall_dist <= 0) perp_wall_dist = 0.001;
 
                 //Calculate height of line to draw on screen
                 int wall_height = (int) (window.height / perp_wall_dist);
 
                 //calculate lowest and highest pixel to fill in current stripe
                 int wall_start = -wall_height / 2 + window.height / 2;
-                if (wall_start < 0)wall_start = 0;
+                if (wall_start < 0) wall_start = 0;
                 int wall_end = wall_height / 2 + window.height / 2;
                 if (wall_end >= window.height) wall_end = window.height - 1;
 
-                Color color = mapValToColor(level.at(map));
+                // Get texture number from map (make sure it's valid)
+                int texNum = level.at(map) - 1;
+                if (texNum < 0) texNum = 0;
 
-                if (side == 1) {
-                    color = darkenColor(color, .95f);
+                // Calculate wall X (where the ray hit the wall)
+                float wallX;
+                if (side == 0) {
+                    wallX = player.position.y + perp_wall_dist * ray_dir.y;
+                } else {
+                    wallX = player.position.x + perp_wall_dist * ray_dir.x;
                 }
+                wallX -= floor(wallX);
 
-                //draw the wall
-                DrawLine(x, wall_start, x, wall_end, darkenColor(color, normalize(perp_wall_dist)));
-                // Draw the floor
-                DrawLine(x, wall_end, x, window.height, mapValToColor(level.floor_style));
-                // Draw the floor
-                DrawLine(x, 0, x, wall_start, darkenColor(mapValToColor(level.roof_style), 0.5f));
+                // Calculate texture coordinates
+                int texX = (int) (wallX * level.atlas.height);
+
+                // Flip texture coordinates if needed
+                if (side == 0 && ray_dir.x > 0) texX = level.atlas.height - texX - 1;
+                if (side == 1 && ray_dir.y < 0) texX = level.atlas.height - texX - 1;
+
+                // Calculate final texture X coordinate including offset for texture number
+                texX = abs(texX) + (texNum * level.atlas.height);
+
+                // Make sure texX is within bounds
+                texX = std::max(0, std::min(texX, level.atlas.width - 1));
+
+                // Calculate texture step and starting position
+                float _step = (float) level.atlas.height / wall_height;
+                float texPos = (wall_start - window.height / 2 + wall_height / 2) * _step;
+
+                // Draw the vertical stripe
+                for (int y = wall_start; y < wall_end; y++) {
+                    int texY = (int) texPos & (level.atlas.height - 1);
+                    texPos += _step;
+
+                    // Ensure texture coordinates are valid
+                    texY = std::max(0, std::min(texY, level.atlas.height - 1));
+
+                    // Get color from texture
+                    Color color = GetImageColor(level.atlas, texX, texY);
+
+
+                    // Apply shading based on distance and side
+                    if (side == 1) {
+                        color.r = color.r * 0.7;
+                        color.g = color.g * 0.7;
+                        color.b = color.b * 0.7;
+                    }
+
+                    // Draw pixel
+                    ImageDrawPixel(&screen_buffer_image, x, y, color);
+                }
             }
+
+            // Draw the frame
+            UpdateTexture(screen_buffer_texture, screen_buffer_image.data);
+            DrawTexture(screen_buffer_texture, 0, 0, WHITE);
+
+
+            // Draw debug info
+            DrawText(TextFormat("FPS: %d", GetFPS()),10, 10, 20, WHITE);
+            DrawText(TextFormat("Pos: %.2f, %.2f", player.position.x, player.position.y), 10, 30, 20, WHITE);
+            DrawText(TextFormat("Dir: %.2f, %.2f", player.direction.x, player.direction.y), 10, 50, 20, WHITE);
+
+            ImageClearBackground(&screen_buffer_image, Color{0, 0, 0, 0});
+
 
             EndDrawing();
         }
