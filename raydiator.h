@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cfloat>
 #include <vector>
 #include <fstream>
@@ -10,7 +11,14 @@
 #include <filesystem>
 #include <unordered_map>
 
-#define TEX_WIDTH 64
+// Constants for texture atlas
+#define ATLAS_SIZE 512
+#define TEXTURE_SIZE 32
+#define TEXTURES_PER_ROW 16
+#define WALL_MIN 1
+#define WALL_MAX 15
+#define SPRITE_MIN 16
+#define SPRITE_MAX 32
 
 
 namespace raydiator {
@@ -74,8 +82,22 @@ namespace raydiator {
         Vector2 position;
         Vector2 direction;
         Vector2 plane;
-        float movement_speed = 3.0f, look_speed = 2.5f;
+        float movement_speed = 2.0f, look_speed = 1.5f;
     };
+
+
+    struct Sprite {
+        Vector2 position; // Position in the world
+        int texture_index; // Index in the sprite texture atlas
+        float distance; // Distance from player (used for sorting)
+    };
+
+    // Helper function to get texture coordinates from index
+    void getAtlasCoordinates(int textureIndex, int &x, int &y) {
+        x = (textureIndex % TEXTURES_PER_ROW) * TEXTURE_SIZE;
+        y = (textureIndex / TEXTURES_PER_ROW) * TEXTURE_SIZE;
+    }
+
 
     /**
      * Type representing a single level in game
@@ -94,6 +116,7 @@ namespace raydiator {
         int roof_style;
 
         Image atlas;
+        std::vector<Sprite> sprites;
 
         /**
          * Returns map value at coord p
@@ -192,6 +215,19 @@ namespace raydiator {
 
             // Now atlas_filename includes the full path relative to the map's directory
             atlas = LoadImage(atlas_path.c_str());
+
+            // add sprites to the world
+            for (int y = 0; y < map.size(); y++) {
+                for (int x = 0; x < map[0].size(); x++) {
+                    if (map[y][x] >= SPRITE_MIN && map[y][x] <= SPRITE_MAX) {
+                        sprites.push_back({
+                            .position = Vector2(x + 0.5f, y + 0.5f),
+                            .texture_index = map[y][x],
+                            .distance = 0.0f
+                        });
+                    }
+                }
+            }
         }
     };
 
@@ -286,6 +322,12 @@ namespace raydiator {
         return 1 - (value - min) / (max - min);
     }
 
+    enum class RayHit {
+        NONE,
+        WALL,
+        SPRITE
+    };
+
     /**
      * Renderer of levels
      */
@@ -298,17 +340,24 @@ namespace raydiator {
         Texture2D screen_buffer_texture;
         uint32_t buffer_width, buffer_height;
         float buffer_scale_factor = 0.5;
+        std::vector<Sprite> visible_sprites;
+        float *z_buffer;
+        int frame_counter = 0;
+        int frame_speed = 6;
+        int current_frame = 0;
 
         LevelRenderer(Level &level, Player &player, Window &window): level(level), player(player), window(window) {
             buffer_width = window.width * buffer_scale_factor;
             buffer_height = window.height * buffer_scale_factor;
             screen_buffer_image = GenImageColor(buffer_width, buffer_height, BLANK);
             screen_buffer_texture = LoadTextureFromImage(screen_buffer_image);
+            z_buffer = new float[buffer_width];
         }
 
         ~LevelRenderer() {
             //UnloadTexture(screen_buffer_texture);
             UnloadImage(screen_buffer_image);
+            delete[] z_buffer;
         }
 
         void update() {
@@ -392,11 +441,27 @@ namespace raydiator {
                 player.plane.y = oldPlaneX * sin(player.look_speed * frame_time) + player.plane.y * cos(
                                      player.look_speed * frame_time);
             }
+
+            frame_counter++;
+
+            if (frame_counter >= (60/frame_speed))
+            {
+                frame_counter = 0;
+                current_frame++;
+
+                if (current_frame > 2) current_frame = 0;
+            }
         }
+
 
         void draw() {
             BeginDrawing();
             ClearBackground(bg_color);
+
+            // Clear z-buffer
+            for (int x = 0; x < buffer_width; x++) {
+                z_buffer[x] = std::numeric_limits<float>::infinity();
+            }
 
             for (int x = 0; x < buffer_width; x++) {
                 //calculate ray position and direction
@@ -407,7 +472,7 @@ namespace raydiator {
                 };
 
                 //which box of the map we're in
-                Vector2 map{floor(player.position.x), floor(player.position.y)}; // Added floor() for safety
+                Vector2 hit_box{floor(player.position.x), floor(player.position.y)}; // Added floor() for safety
 
                 //length of ray from current position to next x or y-side
                 Vector2 side_dist;
@@ -421,96 +486,99 @@ namespace raydiator {
                 //what direction to step in x or y-direction (either +1 or -1)
                 Vector2 dda_step;
 
-                int hit = 0; //was there a wall hit?
+                RayHit hit = RayHit::NONE; //was there a wall hit?
                 int side; //was a NS or a EW wall hit?
 
                 //calculate step and initial sideDist
                 if (ray_dir.x < 0) {
                     dda_step.x = -1;
-                    side_dist.x = (player.position.x - map.x) * delta_dist.x;
+                    side_dist.x = (player.position.x - hit_box.x) * delta_dist.x;
                 } else {
                     dda_step.x = 1;
-                    side_dist.x = (map.x + 1.0 - player.position.x) * delta_dist.x;
+                    side_dist.x = (hit_box.x + 1.0 - player.position.x) * delta_dist.x;
                 }
 
                 if (ray_dir.y < 0) {
                     dda_step.y = -1;
-                    side_dist.y = (player.position.y - map.y) * delta_dist.y;
+                    side_dist.y = (player.position.y - hit_box.y) * delta_dist.y;
                 } else {
                     dda_step.y = 1;
-                    side_dist.y = (map.y + 1.0 - player.position.y) * delta_dist.y;
+                    side_dist.y = (hit_box.y + 1.0 - player.position.y) * delta_dist.y;
                 }
 
                 //perform DDA
-                while (hit == 0) {
+                while (hit != RayHit::WALL) {
                     //jump to next map square, either in x-direction, or in y-direction
                     if (side_dist.x < side_dist.y) {
                         side_dist.x += delta_dist.x;
-                        map.x += dda_step.x;
+                        hit_box.x += dda_step.x;
                         side = 0;
                     } else {
                         side_dist.y += delta_dist.y;
-                        map.y += dda_step.y;
+                        hit_box.y += dda_step.y;
                         side = 1;
                     }
                     //Check if ray has hit a wall
-                    if (level.at(map) > 0) hit = 1;
+                    if (level.at(hit_box) >= WALL_MIN && level.at(hit_box) <= WALL_MAX) hit = RayHit::WALL;
+                    else if (level.at(hit_box) >= SPRITE_MIN && level.at(hit_box) <= SPRITE_MAX) hit = RayHit::SPRITE;
                 }
 
+
                 //Calculate distance projected on camera direction
-                double perp_wall_dist;
-                if (side == 0) perp_wall_dist = (side_dist.x - delta_dist.x);
-                else perp_wall_dist = (side_dist.y - delta_dist.y);
+                float perp_hit_distance;
+                if (side == 0) perp_hit_distance = (side_dist.x - delta_dist.x);
+                else perp_hit_distance = (side_dist.y - delta_dist.y);
 
                 // Prevent division by zero or negative distances
-                if (perp_wall_dist <= 0) perp_wall_dist = 0.001;
+                if (perp_hit_distance <= 0) perp_hit_distance = 0.01;
+
+                // Store the perpendicular distance in the z-buffer
+                z_buffer[x] = perp_hit_distance;
 
                 //Calculate height of line to draw on screen
-                int wall_height = (int) (buffer_height / perp_wall_dist);
+                int hit_object_height = (int) (buffer_height / perp_hit_distance);
 
                 //calculate lowest and highest pixel to fill in current stripe
-                int wall_start = -wall_height / 2 + buffer_height / 2;
-                if (wall_start < 0) wall_start = 0;
-                int wall_end = wall_height / 2 + buffer_height / 2;
-                if (wall_end >= buffer_height) wall_end = buffer_height - 1;
+                int hit_object_y_min = -hit_object_height / 2 + buffer_height / 2;
+                if (hit_object_y_min < 0) hit_object_y_min = 0;
+                int hit_object_y_max = hit_object_height / 2 + buffer_height / 2;
+                if (hit_object_y_max >= buffer_height) hit_object_y_max = buffer_height - 1;
 
                 // Get texture number from map (make sure it's valid)
-                int texNum = level.at(map) - 1;
+                int texNum = level.at(hit_box) - 1;
                 if (texNum < 0) texNum = 0;
 
                 // Calculate wall X (where the ray hit the wall)
                 float wallX;
                 if (side == 0) {
-                    wallX = player.position.y + perp_wall_dist * ray_dir.y;
+                    wallX = player.position.y + perp_hit_distance * ray_dir.y;
                 } else {
-                    wallX = player.position.x + perp_wall_dist * ray_dir.x;
+                    wallX = player.position.x + perp_hit_distance * ray_dir.x;
                 }
-                wallX -= floor(wallX);
+                wallX -= floor(wallX); // This gives us the fractional part (0-1)
 
-                // Calculate texture coordinates
-                int texX = (int) (wallX * level.atlas.height);
+                int baseTexX, baseTexY;
+                getAtlasCoordinates(texNum, baseTexX, baseTexY);
 
-                // Flip texture coordinates if needed
-                if (side == 0 && ray_dir.x > 0) texX = level.atlas.height - texX - 1;
-                if (side == 1 && ray_dir.y < 0) texX = level.atlas.height - texX - 1;
-
-                // Calculate final texture X coordinate including offset for texture number
-                texX = abs(texX) + (texNum * level.atlas.height);
-
-                // Make sure texX is within bounds
-                texX = std::max(0, std::min(texX, level.atlas.width - 1));
+                // Calculate the X offset within the 32x32 texture (using full precision)
+                int texX = static_cast<int>(wallX * TEXTURE_SIZE);
+                // Ensure it stays within the texture bounds
+                texX = texX & (TEXTURE_SIZE - 1); // This is better than min/max for wrapping
+                // Add the base coordinate for the atlas
+                texX = baseTexX + texX;
 
                 // Calculate texture step and starting position
-                float _step = (float) level.atlas.height / wall_height;
-                float texPos = (wall_start - buffer_height / 2 + wall_height / 2) * _step;
+                float _step = static_cast<float>(TEXTURE_SIZE) / hit_object_height;
+                float texPos = (hit_object_y_min - buffer_height / 2 + hit_object_height / 2) * _step;
 
                 // Draw the vertical stripe
-                for (int y = wall_start; y < wall_end; y++) {
-                    int texY = (int) texPos & (level.atlas.height - 1);
+                for (int y = hit_object_y_min; y < hit_object_y_max; y++) {
+                    // Calculate Y coordinate within the 32x32 texture
+                    int texY = static_cast<int>(texPos) & (TEXTURE_SIZE - 1);
                     texPos += _step;
 
-                    // Ensure texture coordinates are valid
-                    texY = std::max(0, std::min(texY, level.atlas.height - 1));
+                    // Add base Y coordinate for this texture in the atlas
+                    texY = baseTexY + texY;
 
                     // Get color from texture
                     Color color = GetImageColor(level.atlas, texX, texY);
@@ -528,6 +596,101 @@ namespace raydiator {
                 }
             }
 
+            // Prepare sprites for rendering
+            visible_sprites.clear();
+            for (const auto &sprite: level.sprites) {
+                // Transform sprite position relative to camera
+                float sprite_x = sprite.position.x - player.position.x;
+                float sprite_y = sprite.position.y - player.position.y;
+
+                // Transform sprite with the inverse camera matrix
+                float inv_det = 1.0f / (player.plane.x * player.direction.y - player.direction.x * player.plane.y);
+                float transform_x = inv_det * (player.direction.y * sprite_x - player.direction.x * sprite_y);
+                float transform_y = inv_det * (-player.plane.y * sprite_x + player.plane.x * sprite_y);
+
+                // Only add sprites that are in front of the camera
+                if (transform_y > 0.1f) {
+                    Sprite visible_sprite = sprite;
+                    visible_sprite.distance = transform_y;
+                    visible_sprites.push_back(visible_sprite);
+                }
+            }
+
+            // Sort sprites from far to close
+            std::sort(visible_sprites.begin(), visible_sprites.end(),
+                      [](const Sprite &a, const Sprite &b) { return a.distance > b.distance; });
+
+            // Render sprites
+            for (const auto &sprite: visible_sprites) {
+                // Transform sprite position relative to camera
+                float sprite_x = sprite.position.x - player.position.x;
+                float sprite_y = sprite.position.y - player.position.y;
+
+                // Transform sprite with the inverse camera matrix
+                float inv_det = 1.0f / (player.plane.x * player.direction.y - player.direction.x * player.plane.y);
+                float transform_x = inv_det * (player.direction.y * sprite_x - player.direction.x * sprite_y);
+                float transform_y = inv_det * (-player.plane.y * sprite_x + player.plane.x * sprite_y);
+
+                // Early exit if behind camera
+                if (transform_y <= 0.1f) continue;
+
+                // Calculate sprite screen position
+                int sprite_screen_x = int((buffer_width / 2) * (1.0f + transform_x / transform_y));
+
+                // Calculate sprite dimensions on screen
+                float sprite_scale = 1.0f; // Adjust this value to change sprite size
+                int sprite_height = abs(int((buffer_height / transform_y) * sprite_scale));
+                int sprite_width = sprite_height; // Keep aspect ratio 1:1
+
+                // Calculate vertical drawing bounds
+                int draw_start_y = -sprite_height / 2 + buffer_height / 2;
+                int draw_end_y = sprite_height / 2 + buffer_height / 2;
+                draw_start_y = std::max(0, draw_start_y);
+                draw_end_y = std::min((int) buffer_height - 1, draw_end_y);
+
+                // Calculate horizontal drawing bounds
+                int draw_start_x = -sprite_width / 2 + sprite_screen_x;
+                int draw_end_x = sprite_width / 2 + sprite_screen_x;
+                draw_start_x = std::max(0, draw_start_x);
+                draw_end_x = std::min((int) buffer_width - 1, draw_end_x);
+
+                // Draw sprite
+                for (int stripe = draw_start_x; stripe < draw_end_x; stripe++) {
+                    if (transform_y < z_buffer[stripe]) {
+                        // Depth test
+                        // Calculate texture X coordinate
+                        float fx = (stripe - (sprite_screen_x - sprite_width / 2)) / (float) sprite_width;
+                        int texX = int(fx * TEXTURE_SIZE);
+                        texX = std::clamp(texX, 0, TEXTURE_SIZE - 1); // Use clamp instead of wrap
+
+                        // Get base coordinates for this sprite's texture
+                        int baseTexX, baseTexY;
+                        getAtlasCoordinates(sprite.texture_index + current_frame, baseTexX, baseTexY);
+                        texX = baseTexX + texX;
+
+                        // Vertical texture loop
+                        for (int y = draw_start_y; y < draw_end_y; y++) {
+                            // Calculate texture Y coordinate
+                            float fy = (y - (buffer_height / 2 - sprite_height / 2)) / (float) sprite_height;
+                            int texY = int(fy * TEXTURE_SIZE);
+                            texY = std::clamp(texY, 0, TEXTURE_SIZE - 1); // Use clamp instead of wrap
+
+                            texY = baseTexY + texY;
+
+                            // Get color from texture atlas
+                            Color color = GetImageColor(level.atlas, texX, texY);
+                            if (color.a > 0) {
+                                ImageDrawPixel(&screen_buffer_image, stripe, y, color);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Draw background gradient
+            DrawRectangleGradientV(0, 0, window.width, window.height / 2, Color{176, 99, 16, 1}, BLACK);
+            DrawRectangleGradientV(0, window.height / 2, window.width, window.height / 2, BLACK, Color{176, 99, 16, 1});
+
             // Draw the frame
             UpdateTexture(screen_buffer_texture, screen_buffer_image.data);
             DrawTexturePro(
@@ -540,9 +703,6 @@ namespace raydiator {
                 0.0f, // Rotation (no rotation)
                 WHITE // Tint (no tint, full color)
             );
-
-            // This works fine (but does not cover whole frame)
-            //DrawTexture(screen_buffer_texture, 0, 0, WHITE);
 
 
             // Draw debug info
