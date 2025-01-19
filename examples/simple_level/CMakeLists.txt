@@ -5,4 +5,4 @@ add_executable(simple_level
 
 # Link the engine library
 target_link_libraries(simple_level PRIVATE raydiator)
-target_include_directories(simple_level PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(simple_level PRIVATE ${PROJECT_SOURCE_DIR})
