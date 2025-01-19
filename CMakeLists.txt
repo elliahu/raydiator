@@ -21,4 +21,7 @@ find_package(raylib CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 target_link_libraries(raydiator INTERFACE raylib glfw)
 
+# Also build tools
+add_subdirectory(tools/level_editor)
+
 

@@ -186,8 +186,9 @@ namespace raydiator {
             std::string atlas_filename = readMetadata<std::string>("atlas_filename");
 
             // Update atlas_filename to include the parent directory path from filename of map
-            std::filesystem::path map_path(filename);  // Get the path object for the map file
-            std::filesystem::path atlas_path = map_path.parent_path() / atlas_filename;  // Combine parent path with the atlas filename
+            std::filesystem::path map_path(filename); // Get the path object for the map file
+            std::filesystem::path atlas_path = map_path.parent_path() / atlas_filename;
+            // Combine parent path with the atlas filename
 
             // Now atlas_filename includes the full path relative to the map's directory
             atlas = LoadImage(atlas_path.c_str());
@@ -221,7 +222,7 @@ namespace raydiator {
             this->fullscreen = fullscreen;
             this->target_fps = 60;
 
-            SetTraceLogLevel(TraceLogLevel::LOG_ERROR);
+            //SetTraceLogLevel(TraceLogLevel::LOG_ERROR);
             InitWindow(static_cast<int>(width), static_cast<int>(height), title.c_str());
             SetTargetFPS(target_fps);
 
@@ -295,15 +296,19 @@ namespace raydiator {
         Color bg_color = Color{0, 0, 0, 1};
         Image screen_buffer_image;
         Texture2D screen_buffer_texture;
+        uint32_t buffer_width, buffer_height;
+        float buffer_scale_factor = 0.5;
 
         LevelRenderer(Level &level, Player &player, Window &window): level(level), player(player), window(window) {
-            screen_buffer_image = GenImageColor(window.width, window.height, BLANK);
+            buffer_width = window.width * buffer_scale_factor;
+            buffer_height = window.height * buffer_scale_factor;
+            screen_buffer_image = GenImageColor(buffer_width, buffer_height, BLANK);
             screen_buffer_texture = LoadTextureFromImage(screen_buffer_image);
         }
 
         ~LevelRenderer() {
+            //UnloadTexture(screen_buffer_texture);
             UnloadImage(screen_buffer_image);
-            UnloadTexture(screen_buffer_texture);
         }
 
         void update() {
@@ -393,9 +398,9 @@ namespace raydiator {
             BeginDrawing();
             ClearBackground(bg_color);
 
-            for (int x = 0; x < window.width; x++) {
+            for (int x = 0; x < buffer_width; x++) {
                 //calculate ray position and direction
-                float camera_x = 2 * x / static_cast<float>(window.width) - 1;
+                float camera_x = 2 * x / static_cast<float>(buffer_width) - 1;
                 Vector2 ray_dir = {
                     player.direction.x + player.plane.x * camera_x,
                     player.direction.y + player.plane.y * camera_x
@@ -461,13 +466,13 @@ namespace raydiator {
                 if (perp_wall_dist <= 0) perp_wall_dist = 0.001;
 
                 //Calculate height of line to draw on screen
-                int wall_height = (int) (window.height / perp_wall_dist);
+                int wall_height = (int) (buffer_height / perp_wall_dist);
 
                 //calculate lowest and highest pixel to fill in current stripe
-                int wall_start = -wall_height / 2 + window.height / 2;
+                int wall_start = -wall_height / 2 + buffer_height / 2;
                 if (wall_start < 0) wall_start = 0;
-                int wall_end = wall_height / 2 + window.height / 2;
-                if (wall_end >= window.height) wall_end = window.height - 1;
+                int wall_end = wall_height / 2 + buffer_height / 2;
+                if (wall_end >= buffer_height) wall_end = buffer_height - 1;
 
                 // Get texture number from map (make sure it's valid)
                 int texNum = level.at(map) - 1;
@@ -497,7 +502,7 @@ namespace raydiator {
 
                 // Calculate texture step and starting position
                 float _step = (float) level.atlas.height / wall_height;
-                float texPos = (wall_start - window.height / 2 + wall_height / 2) * _step;
+                float texPos = (wall_start - buffer_height / 2 + wall_height / 2) * _step;
 
                 // Draw the vertical stripe
                 for (int y = wall_start; y < wall_end; y++) {
@@ -525,11 +530,23 @@ namespace raydiator {
 
             // Draw the frame
             UpdateTexture(screen_buffer_texture, screen_buffer_image.data);
-            DrawTexture(screen_buffer_texture, 0, 0, WHITE);
+            DrawTexturePro(
+                screen_buffer_texture, // The texture to draw
+                Rectangle{0, 0, static_cast<float>(buffer_width), static_cast<float>(buffer_height)},
+                // Source rectangle (flipped vertically)
+                Rectangle{0, 0, static_cast<float>(window.width), static_cast<float>(window.height)},
+                // Destination rectangle (scaled to full screen)
+                Vector2{0, 0}, // Origin (top-left corner)
+                0.0f, // Rotation (no rotation)
+                WHITE // Tint (no tint, full color)
+            );
+
+            // This works fine (but does not cover whole frame)
+            //DrawTexture(screen_buffer_texture, 0, 0, WHITE);
 
 
             // Draw debug info
-            DrawText(TextFormat("FPS: %d", GetFPS()),10, 10, 20, WHITE);
+            DrawText(TextFormat("FPS: %d", GetFPS()), 10, 10, 20, WHITE);
             DrawText(TextFormat("Pos: %.2f, %.2f", player.position.x, player.position.y), 10, 30, 20, WHITE);
             DrawText(TextFormat("Dir: %.2f, %.2f", player.direction.x, player.direction.y), 10, 50, 20, WHITE);
 
