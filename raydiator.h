@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <vector>
 #include <fstream>
@@ -11,14 +12,18 @@
 #include <filesystem>
 #include <unordered_map>
 
-// Constants for texture atlas
-#define ATLAS_SIZE 512
-#define TEXTURE_SIZE 32
-#define TEXTURES_PER_ROW 16
-#define WALL_MIN 1
-#define WALL_MAX 15
-#define SPRITE_MIN 16
-#define SPRITE_MAX 32
+
+#define SPRITE_ATLAS_SIZE 512
+#define SPRITE_TEXTURE_SIZE 32
+#define SPRITE_TEXTURES_PER_ROW 16
+#define SPRITE_WALL_ROW_IDX 0
+#define SPRITE_CHEST_ROW_IDX 1
+#define SPRITE_ENEMY_ROW_IDX 2
+
+#define PLAYER_MAX_WEAPONS 4
+#define PLAYER_MAX_KEYS 1
+#define PLAYER_MAX_HP 10
+#define PLAYER_MAX_SP 100
 
 
 namespace raydiator {
@@ -76,6 +81,28 @@ namespace raydiator {
     typedef std::unordered_map<std::string, std::string> Metadata;
 
     /**
+     * Item that player can use
+     */
+    struct Item {
+        enum class Type {
+            Empty,
+            Weapon,
+            Key
+        } type;
+        std::string name = "Empty";
+    };
+
+    struct Weapon : Item {
+        unsigned int dmg;
+    };
+
+    struct Key : Item {
+        enum class AccessLevel {
+            FIRST, SECOND, THIRD
+        } access_level;
+    };
+
+    /**
      * Player values and helpers
      */
     struct Player {
@@ -83,19 +110,45 @@ namespace raydiator {
         Vector2 direction;
         Vector2 plane;
         float movement_speed = 2.0f, look_speed = 1.5f;
-    };
+        unsigned int hp = PLAYER_MAX_HP;
+        unsigned int sp = 0;
+        std::array<Weapon, PLAYER_MAX_WEAPONS> weapons{};
+        std::array<Key, PLAYER_MAX_KEYS> keys{};
+    };;
 
-
+    /**
+     * Sprite is a 2D image rendered in a scene, can be animated
+     */
     struct Sprite {
+        enum class Type {
+            CHEST, ENEMY
+        }type;
         Vector2 position; // Position in the world
         int texture_index; // Index in the sprite texture atlas
         float distance; // Distance from player (used for sorting)
     };
 
+    /**
+     * Chest sprite, opened and closed
+     */
+    struct Chest : Sprite {
+        bool opened = false;
+        int closed_offset = 0;
+        int opened_offset = 1;
+    };
+
+    /**
+     * Enemy sprite along with its animations
+     */
+    struct Enemy: Sprite {
+        int idle_anim_offset;
+        int idle_anime_stride;
+    };
+
     // Helper function to get texture coordinates from index
     void getAtlasCoordinates(int textureIndex, int &x, int &y) {
-        x = (textureIndex % TEXTURES_PER_ROW) * TEXTURE_SIZE;
-        y = (textureIndex / TEXTURES_PER_ROW) * TEXTURE_SIZE;
+        x = (textureIndex % SPRITE_TEXTURES_PER_ROW) * SPRITE_TEXTURE_SIZE;
+        y = (textureIndex / SPRITE_TEXTURES_PER_ROW) * SPRITE_TEXTURE_SIZE;
     }
 
 
@@ -197,6 +250,7 @@ namespace raydiator {
 
             file.close();
 
+            // Read metadata
             start_pos_x = readMetadata<float>("start_pos_x");
             start_pos_y = readMetadata<float>("start_pos_y");
             start_dir_x = readMetadata<float>("start_dir_x");
@@ -219,12 +273,25 @@ namespace raydiator {
             // add sprites to the world
             for (int y = 0; y < map.size(); y++) {
                 for (int x = 0; x < map[0].size(); x++) {
-                    if (map[y][x] >= SPRITE_MIN && map[y][x] <= SPRITE_MAX) {
-                        sprites.push_back({
-                            .position = Vector2(x + 0.5f, y + 0.5f),
-                            .texture_index = map[y][x],
-                            .distance = 0.0f
-                        });
+                    if (map[y][x] >= SPRITE_TEXTURES_PER_ROW * SPRITE_CHEST_ROW_IDX && map[y][x] < (SPRITE_TEXTURES_PER_ROW * SPRITE_CHEST_ROW_IDX + SPRITE_TEXTURES_PER_ROW)) {
+                        Chest chest{};
+                        chest.position = Vector2(x + 0.5f, y + 0.5f);
+                        chest.distance = 0.0f;
+                        chest.texture_index = map[y][x];
+                        chest.closed_offset = 0;
+                        chest.opened_offset = 1;
+                        chest.type = Sprite::Type::CHEST;
+                        sprites.push_back(chest);
+                    }
+                    if (map[y][x] >= SPRITE_TEXTURES_PER_ROW * SPRITE_ENEMY_ROW_IDX && map[y][x] < (SPRITE_TEXTURES_PER_ROW * SPRITE_ENEMY_ROW_IDX + SPRITE_TEXTURES_PER_ROW)) {
+                        Enemy enemy{};
+                        enemy.type = Sprite::Type::ENEMY;
+                        enemy.position = Vector2(x + 0.5f, y + 0.5f);
+                        enemy.distance = 0.0f;
+                        enemy.texture_index = map[y][x];
+                        enemy.idle_anim_offset = 0;
+                        enemy.idle_anime_stride = 3;
+                        sprites.push_back(enemy);
                     }
                 }
             }
@@ -519,8 +586,7 @@ namespace raydiator {
                         side = 1;
                     }
                     //Check if ray has hit a wall
-                    if (level.at(hit_box) >= WALL_MIN && level.at(hit_box) <= WALL_MAX) hit = RayHit::WALL;
-                    else if (level.at(hit_box) >= SPRITE_MIN && level.at(hit_box) <= SPRITE_MAX) hit = RayHit::SPRITE;
+                    if (level.at(hit_box) > SPRITE_TEXTURES_PER_ROW *  SPRITE_WALL_ROW_IDX && level.at(hit_box) < SPRITE_TEXTURES_PER_ROW *  SPRITE_WALL_ROW_IDX + SPRITE_TEXTURES_PER_ROW) hit = RayHit::WALL;
                 }
 
 
@@ -546,7 +612,6 @@ namespace raydiator {
 
                 // Get texture number from map (make sure it's valid)
                 int texNum = level.at(hit_box) - 1;
-                if (texNum < 0) texNum = 0;
 
                 // Calculate wall X (where the ray hit the wall)
                 float wallX;
@@ -561,20 +626,20 @@ namespace raydiator {
                 getAtlasCoordinates(texNum, baseTexX, baseTexY);
 
                 // Calculate the X offset within the 32x32 texture (using full precision)
-                int texX = static_cast<int>(wallX * TEXTURE_SIZE);
+                int texX = static_cast<int>(wallX * SPRITE_TEXTURE_SIZE);
                 // Ensure it stays within the texture bounds
-                texX = texX & (TEXTURE_SIZE - 1); // This is better than min/max for wrapping
+                texX = texX & (SPRITE_TEXTURE_SIZE - 1); // This is better than min/max for wrapping
                 // Add the base coordinate for the atlas
                 texX = baseTexX + texX;
 
                 // Calculate texture step and starting position
-                float _step = static_cast<float>(TEXTURE_SIZE) / hit_object_height;
+                float _step = static_cast<float>(SPRITE_TEXTURE_SIZE) / hit_object_height;
                 float texPos = (hit_object_y_min - buffer_height / 2 + hit_object_height / 2) * _step;
 
                 // Draw the vertical stripe
                 for (int y = hit_object_y_min; y < hit_object_y_max; y++) {
                     // Calculate Y coordinate within the 32x32 texture
-                    int texY = static_cast<int>(texPos) & (TEXTURE_SIZE - 1);
+                    int texY = static_cast<int>(texPos) & (SPRITE_TEXTURE_SIZE - 1);
                     texPos += _step;
 
                     // Add base Y coordinate for this texture in the atlas
@@ -660,20 +725,28 @@ namespace raydiator {
                         // Depth test
                         // Calculate texture X coordinate
                         float fx = (stripe - (sprite_screen_x - sprite_width / 2)) / (float) sprite_width;
-                        int texX = int(fx * TEXTURE_SIZE);
-                        texX = std::clamp(texX, 0, TEXTURE_SIZE - 1); // Use clamp instead of wrap
+                        int texX = int(fx * SPRITE_TEXTURE_SIZE);
+                        texX = std::clamp(texX, 0, SPRITE_TEXTURE_SIZE - 1); // Use clamp instead of wrap
 
                         // Get base coordinates for this sprite's texture
-                        int baseTexX, baseTexY;
-                        getAtlasCoordinates(sprite.texture_index + current_frame, baseTexX, baseTexY);
+                        int baseTexX=0, baseTexY = 0;
+                        if (sprite.type == Sprite::Type::CHEST) {
+                            Chest chest = Chest(sprite);
+                            getAtlasCoordinates(chest.texture_index + ((chest.opened)? chest.opened_offset : chest.closed_offset) , baseTexX, baseTexY);
+                        }
+                        else if (sprite.type == Sprite::Type::ENEMY) {
+                            Enemy enemy = Enemy(sprite);
+                            getAtlasCoordinates(sprite.texture_index + current_frame, baseTexX, baseTexY);
+                        }
+
                         texX = baseTexX + texX;
 
                         // Vertical texture loop
                         for (int y = draw_start_y; y < draw_end_y; y++) {
                             // Calculate texture Y coordinate
                             float fy = (y - (buffer_height / 2 - sprite_height / 2)) / (float) sprite_height;
-                            int texY = int(fy * TEXTURE_SIZE);
-                            texY = std::clamp(texY, 0, TEXTURE_SIZE - 1); // Use clamp instead of wrap
+                            int texY = int(fy * SPRITE_TEXTURE_SIZE);
+                            texY = std::clamp(texY, 0, SPRITE_TEXTURE_SIZE - 1); // Use clamp instead of wrap
 
                             texY = baseTexY + texY;
 
@@ -709,6 +782,21 @@ namespace raydiator {
             DrawText(TextFormat("FPS: %d", GetFPS()), 10, 10, 20, WHITE);
             DrawText(TextFormat("Pos: %.2f, %.2f", player.position.x, player.position.y), 10, 30, 20, WHITE);
             DrawText(TextFormat("Dir: %.2f, %.2f", player.direction.x, player.direction.y), 10, 50, 20, WHITE);
+
+            // Draw UI
+            // Weapons
+            DrawText(TextFormat("Inventory:"), 10, 180, 20, WHITE);
+            for (int w = 0; w < PLAYER_MAX_WEAPONS; w++) {
+                DrawText(TextFormat("%d: %s",w, player.weapons[w].name.c_str()), 10, 200 + (w * 20), 20, WHITE);
+            }
+            // Keyes
+            for (int k = 0; k < PLAYER_MAX_KEYS; k++) {
+                DrawText(TextFormat("%d: %s",k + PLAYER_MAX_WEAPONS, player.keys[k].name.c_str()), 10, (200 + (PLAYER_MAX_WEAPONS * 20)) + (k * 20), 20, WHITE);
+            }
+
+            // Hp and Sp
+            DrawText(TextFormat("Health: %d/%d", player.hp, PLAYER_MAX_HP), 200, window.height - 30, 20, WHITE);
+            DrawText(TextFormat("Shield: %d/%d", player.sp, PLAYER_MAX_SP), 350, window.height - 30, 20, WHITE);
 
             ImageClearBackground(&screen_buffer_image, Color{0, 0, 0, 0});
 

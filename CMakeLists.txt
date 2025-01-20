@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_subdirectory(examples)
 
 # Define engine library
-add_library(raydiator INTERFACE)
+add_library(raydiator INTERFACE raydiator.h)
 
 target_include_directories(raydiator INTERFACE ${PROJECT_SOURCE_DIR}/include/)
 target_include_directories(raydiator INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
