@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <cstdint>
 #include <raylib.h>
+#include <raymath.h>
 #include <filesystem>
 #include <unordered_map>
 
@@ -412,6 +413,7 @@ namespace raydiator {
         int frame_counter = 0;
         int frame_speed = 6;
         int current_frame = 0;
+        std::string on_screen_message = "";
 
         LevelRenderer(Level &level, Player &player, Window &window): level(level), player(player), window(window) {
             buffer_width = window.width * buffer_scale_factor;
@@ -430,6 +432,8 @@ namespace raydiator {
         void update() {
             // this updates frame timing
             BaseRenderer::update();
+
+            on_screen_message = "";
 
             if (IsKeyDown(KEY_W)) {
                 // Calculate future positions
@@ -507,6 +511,15 @@ namespace raydiator {
                                      player.look_speed * frame_time);
                 player.plane.y = oldPlaneX * sin(player.look_speed * frame_time) + player.plane.y * cos(
                                      player.look_speed * frame_time);
+            }
+
+            for (auto& sprite: visible_sprites) {
+                float dist = Vector2Distance(sprite.position, player.position);
+                if (dist < 1.0) {
+                    if (sprite.type == Sprite::Type::CHEST) {
+                        on_screen_message = "Press E to open";
+                    }
+                }
             }
 
             frame_counter++;
@@ -797,6 +810,11 @@ namespace raydiator {
             // Hp and Sp
             DrawText(TextFormat("Health: %d/%d", player.hp, PLAYER_MAX_HP), 200, window.height - 30, 20, WHITE);
             DrawText(TextFormat("Shield: %d/%d", player.sp, PLAYER_MAX_SP), 350, window.height - 30, 20, WHITE);
+
+            // Message
+            if (on_screen_message != "") {
+                DrawText(TextFormat(on_screen_message.c_str()), (window.width / 2) - 100, window.height/2, 20, WHITE);
+            }
 
             ImageClearBackground(&screen_buffer_image, Color{0, 0, 0, 0});
 
