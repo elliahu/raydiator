@@ -1,27 +1,47 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 3.29.6)
+
 project(raydiator
         VERSION 0.1
-        DESCRIPTION "Header-only game engine"
-        LANGUAGES CXX)
+        DESCRIPTION "Game engine"
+        LANGUAGES CXX
+)
 
 # Set global C++ standard
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Also build examples
-add_subdirectory(examples)
+# Add hammock dependency
+add_subdirectory(hammock)
+
+# Collect sources
+file(GLOB_RECURSE RAYDIATOR_SOURCES
+        ${PROJECT_SOURCE_DIR}/engine/src/*.cpp
+)
 
 # Define engine library
-add_library(raydiator INTERFACE raydiator.h)
+add_library(raydiator
+        raydiator.h
+        ${RAYDIATOR_SOURCES}
+        engine/include/Renderer.h
+        engine/src/Renderer.cpp
+        tools/test_game/main.cpp
+        engine/src/Engine.cpp
+        engine/include/Engine.h
+)
 
-target_include_directories(raydiator INTERFACE ${PROJECT_SOURCE_DIR}/include/)
-target_include_directories(raydiator INTERFACE ${CMAKE_CURRENT_BINARY_DIR})
+# Public headers visible to consumers of the library
+target_include_directories(raydiator PUBLIC
+        ${PROJECT_SOURCE_DIR}/engine/include
+        ${PROJECT_SOURCE_DIR}              # so that #include "raydiator.h" works
+        ${CMAKE_CURRENT_BINARY_DIR}
+)
 
-find_package(raylib CONFIG REQUIRED)
-find_package(glfw3 CONFIG REQUIRED)
-target_link_libraries(raydiator INTERFACE raylib glfw)
+# Private headers only needed inside the library
+target_include_directories(raydiator PRIVATE
+        ${PROJECT_SOURCE_DIR}/hammock/include
+)
+
+target_link_libraries(raydiator PRIVATE hammock)
 
 # Also build tools
 add_subdirectory(tools/level_editor)
-
-
